@@ -2,80 +2,6 @@
 
 This repository implements a distributed training pipeline for a sequence-to-sequence Transformer with multi-head attention. 
 
-
-
-**High-level Architecture**
-- **Model**: Standard encoder-decoder Transformer architecture (scaled dot-product multi-head attention, position-wise feed-forward networks, residual connections and layer normalization). The model exposes `encode`, `decode` and a final `project` projection layer; training uses the combined forward wrapper for efficiency.
-- **Multi-head attention**: Implemented per the original Transformer paper; attention outputs are combined and projected back to model dimension `d_model`.
-
-**Distributed Training Design**
-- **Process model**: Uses PyTorch Distributed Data Parallel (`torch.distributed.init_process_group`, `DistributedDataParallel`) with one process per GPU. Devices are selected using `local_rank` and `torch.cuda.set_device`.
-- **Data sharding**: Training `DataLoader` uses `DistributedSampler` to ensure each process receives a distinct partition of the dataset per epoch.
-- **Checkpointing**: Checkpoints save `epoch`, `model_state_dict` (taken from `model.module` when wrapped in DDP), optimizer state, and `global_step`. Only the main/global rank writes checkpoints to avoid races.
-
-**Data pipeline**
-- **Source**: Uses Hugging Face `datasets` (`opus_books`) as the raw text source and a small WordLevel tokenizer built with `tokenizers` when no tokenizer file exists.
-- **Tokenization**: `get_or_build_tokenizer` constructs or loads a `tokenizer` per language; tokenizers are persisted to JSON files for inference reproducibility.
-- **Batching & Masks**: `BilingualDataset` returns `encoder_input`, `decoder_input`, `encoder_mask`, `decoder_mask`, and `label` tensors. `causal_mask` is used to enforce autoregressive decoding during training/validation.
-
-**Training loop & optimization**
-- **Loss**: Cross-entropy with `ignore_index` set to the PAD token and `label_smoothing=0.1`.
-- **Optimizer**: Adam with small `eps` for numerical stability.
-- **Grad/update flow**: Standard backward(), optimizer.step(), and zeroing gradients. The code expects to run under DDP, so parameter synchronization is handled by PyTorch.
-
-**Validation & Metrics**
-- **Greedy decoding**: Validation uses a `greedy_decode` routine that reuses encoder outputs and steps the decoder until `EOS` or `max_len`.
-- **Metrics**: Uses `torchmetrics` for Character Error Rate (CER), Word Error Rate (WER), and BLEU. Metrics are computed on the rank-0 process and printed by default.
-
-**Configuration & Extensibility**
-- **`ModelConfig`**: Central configuration dataclass (batch size, learning rate, sequence lengths, model dims, file locations). Command-line args overlay defaults at startup.
-- **Checkpoint resume**: The checkpoint-loading code populates `initial_epoch` and `global_step` from saved state to resume training seamlessly.
-- **Instrumenting**: The code centralizes rank-0 logging and metric computation to avoid duplicated outputs from all processes. Replacing or adding an experiment backend (e.g., MLFlow) can be done by plugging an optional logger on rank 0.
-```markdown
-# pytorch-transformer-distributed — Technical Overview
-
-This repository implements a distributed training pipeline for a sequence-to-sequence Transformer with multi-head attention. The focus of this README is the architecture and design decisions found in the codebase, not on runtime or deployment instructions.
-
-**Repository Layout**
-- **`train.py`**: Entrypoint that wires configuration, data loading, model construction, distributed initialization, training loop, validation, and checkpointing.
-- **`model.py`**: Transformer definition including encoder/decoder stacks, multi-head attention, and projection layers.
-- **`dataset.py`**: Dataset wrapper and collations (`BilingualDataset`) that produce encoder/decoder inputs, masks, and labels expected by the model.
-- **`config.py`**: `ModelConfig` dataclass and helper functions for checkpoint path resolution.
-
-
-**High-level Architecture**
-- **Model**: Standard encoder-decoder Transformer architecture (scaled dot-product multi-head attention, position-wise feed-forward networks, residual connections and layer normalization). The model exposes `encode`, `decode` and a final `project` projection layer; training uses the combined forward wrapper for efficiency.
-- **Multi-head attention**: Implemented per the original Transformer paper; attention outputs are combined and projected back to model dimension `d_model`.
-
-**Distributed Training Design**
-- **Process model**: Uses PyTorch Distributed Data Parallel (`torch.distributed.init_process_group`, `DistributedDataParallel`) with one process per GPU. Devices are selected using `local_rank` and `torch.cuda.set_device`.
-- **Data sharding**: Training `DataLoader` uses `DistributedSampler` to ensure each process receives a distinct partition of the dataset per epoch.
-- **Checkpointing**: Checkpoints save `epoch`, `model_state_dict` (taken from `model.module` when wrapped in DDP), optimizer state, and `global_step`. Only the main/global rank writes checkpoints to avoid races.
-
-**Data pipeline**
-- **Source**: Uses Hugging Face `datasets` (`opus_books`) as the raw text source and a small WordLevel tokenizer built with `tokenizers` when no tokenizer file exists.
-- **Tokenization**: `get_or_build_tokenizer` constructs or loads a `tokenizer` per language; tokenizers are persisted to JSON files for inference reproducibility.
-- **Batching & Masks**: `BilingualDataset` returns `encoder_input`, `decoder_input`, `encoder_mask`, `decoder_mask`, and `label` tensors. `causal_mask` is used to enforce autoregressive decoding during training/validation.
-
-**Training loop & optimization**
-- **Loss**: Cross-entropy with `ignore_index` set to the PAD token and `label_smoothing=0.1`.
-- **Optimizer**: Adam with small `eps` for numerical stability.
-- **Grad/update flow**: Standard backward(), optimizer.step(), and zeroing gradients. The code expects to run under DDP, so parameter synchronization is handled by PyTorch.
-
-**Validation & Metrics**
-- **Greedy decoding**: Validation uses a `greedy_decode` routine that reuses encoder outputs and steps the decoder until `EOS` or `max_len`.
-- **Metrics**: Uses `torchmetrics` for Character Error Rate (CER), Word Error Rate (WER), and BLEU. Metrics are computed on the rank-0 process and printed by default.
-
-**Configuration & Extensibility**
-- **`ModelConfig`**: Central configuration dataclass (batch size, learning rate, sequence lengths, model dims, file locations). Command-line args overlay defaults at startup.
-- **Checkpoint resume**: The checkpoint-loading code populates `initial_epoch` and `global_step` from saved state to resume training seamlessly.
-- **Instrumenting**: The code centralizes rank-0 logging and metric computation to avoid duplicated outputs from all processes. Replacing or adding an experiment backend (e.g., MLFlow) can be done by plugging an optional logger on rank 0.
-
-**Design trade-offs & notes**
-- **Simplicity over micro-optimizations**: The implementation prefers clarity in the training loop and tokenization pipeline; larger-scale optimizations (mixed precision, gradient accumulation, advanced schedulers) are left for extension.
-- **Tokenizer training**: Tokenizers are trained from the dataset if missing; for reproducibility, prefer committing the generated tokenizer files to source control or an artifact store.
-- **Single-batch validation assumption**: The validation `greedy_decode` assumes batch size 1 for readability of outputs and stepwise decoding; adapting to beam search or batch decoding would require changes in that routine.
-
 **Distributed training methodologies (overview)**
 This project currently uses DDP. Below is a concise description of several paradigms you may consider when scaling beyond single-node multi-GPU training.
 
@@ -103,5 +29,33 @@ This project currently uses DDP. Below is a concise description of several parad
    - Cons: Complex routing, load balancing, and communication (all-to-all) between devices; requires careful implementation to avoid stragglers.
    - Libraries like DeepSpeed and fairscale provide MoE building blocks and routing utilities.
 
+
+**High-level Architecture**
+- **Model**: Standard encoder-decoder Transformer architecture (scaled dot-product multi-head attention, position-wise feed-forward networks, residual connections and layer normalization). The model exposes `encode`, `decode` and a final `project` projection layer; training uses the combined forward wrapper for efficiency.
+- **Multi-head attention**: Implemented per the original Transformer paper; attention outputs are combined and projected back to model dimension `d_model`.
+
+**Distributed Training Design**
+- **Process model**: Uses PyTorch Distributed Data Parallel (`torch.distributed.init_process_group`, `DistributedDataParallel`) with one process per GPU. Devices are selected using `local_rank` and `torch.cuda.set_device`.
+- **Data sharding**: Training `DataLoader` uses `DistributedSampler` to ensure each process receives a distinct partition of the dataset per epoch.
+- **Checkpointing**: Checkpoints save `epoch`, `model_state_dict` (taken from `model.module` when wrapped in DDP), optimizer state, and `global_step`. Only the main/global rank writes checkpoints to avoid races.
+
+**Data pipeline**
+- **Source**: Uses Hugging Face `datasets` (`opus_books`) as the raw text source and a small WordLevel tokenizer built with `tokenizers` when no tokenizer file exists.
+- **Tokenization**: `get_or_build_tokenizer` constructs or loads a `tokenizer` per language; tokenizers are persisted to JSON files for inference reproducibility.
+- **Batching & Masks**: `BilingualDataset` returns `encoder_input`, `decoder_input`, `encoder_mask`, `decoder_mask`, and `label` tensors. `causal_mask` is used to enforce autoregressive decoding during training/validation.
+
+**Training loop & optimization**
+- **Loss**: Cross-entropy with `ignore_index` set to the PAD token and `label_smoothing=0.1`.
+- **Optimizer**: Adam with small `eps` for numerical stability.
+- **Grad/update flow**: Standard backward(), optimizer.step(), and zeroing gradients. The code expects to run under DDP, so parameter synchronization is handled by PyTorch.
+
+**Validation & Metrics**
+- **Greedy decoding**: Validation uses a `greedy_decode` routine that reuses encoder outputs and steps the decoder until `EOS` or `max_len`.
+- **Metrics**: Uses `torchmetrics` for Character Error Rate (CER), Word Error Rate (WER), and BLEU. Metrics are computed on the rank-0 process and printed by default.
+
+**Configuration & Extensibility**
+- **`ModelConfig`**: Central configuration dataclass (batch size, learning rate, sequence lengths, model dims, file locations). Command-line args overlay defaults at startup.
+- **Checkpoint resume**: The checkpoint-loading code populates `initial_epoch` and `global_step` from saved state to resume training seamlessly.
+- **Instrumenting**: The code centralizes rank-0 logging and metric computation to avoid duplicated outputs from all processes. Replacing or adding an experiment backend (e.g., MLFlow) can be done by plugging an optional logger on rank 0.
 
 
