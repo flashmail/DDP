@@ -1,4 +1,3 @@
-```markdown
 #  Multi‑GPU / Multi‑Node Distributed Training
 
 This repository implements a distributed training pipeline for a sequence-to-sequence Transformer with multi-head attention. 
@@ -102,9 +101,7 @@ This project currently uses DDP. Below is a concise description of several parad
    - Description: Model contains multiple 'expert' sub-networks. A gating network routes tokens to a small subset of experts per token, so each token is processed by few experts while the overall capacity grows.
    - Pros: Increased model capacity with sublinear compute cost per token; efficient for sparse compute patterns.
    - Cons: Complex routing, load balancing, and communication (all-to-all) between devices; requires careful implementation to avoid stragglers.
-   Libraries like DeepSpeed and fairscale provide MoE building blocks and routing utilities.
+   - Libraries like DeepSpeed and fairscale provide MoE building blocks and routing utilities.
 
 
 
-
-```
